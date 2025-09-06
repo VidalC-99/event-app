@@ -1,0 +1,392 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =========================
+// Auth (compatible NextAuth)
+// =========================
+model User {
+  id                String            @id @default(cuid())
+  name              String?
+  email             String?           @unique
+  hashedPassword    String?           @db.Text
+  emailVerified     DateTime?         @map("email_verified")
+  image             String?
+  phone             String?
+
+  accounts          Account[]
+  sessions          Session[]
+
+  organizerProfile  OrganizerProfile?
+  events            Event[]
+  eventGroups       EventGroup[]
+
+  staffCheckins     Checkin[]         @relation("CheckinByStaff")
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@map("users")
+}
+
+model Account {
+  id                 String  @id @default(cuid())
+  userId             String  @map("user_id")
+  type               String
+  provider           String
+  providerAccountId  String  @map("provider_account_id")
+  refresh_token      String? @db.Text
+  access_token       String? @db.Text
+  expires_at         Int?
+  token_type         String?
+  scope              String?
+  id_token           String? @db.Text
+  session_state      String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id")
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+//   =========
+//   Organizer
+//   =========
+model OrganizerProfile {
+  id              String    @id @default(cuid())
+  userId          String    @unique @map("user_id")
+
+  displayName     String?
+  orgName         String?
+  defaultLocale   String?      // ex: "fr-FR"
+  defaultTz       String?      // ex: "Europe/Paris"
+
+  themeKey        String?      // ex: "pastel", "dark"
+  brandingJson    Json?        // logo, couleurs, typos…
+  defaultPlace    String?
+  contactEmail    String?
+  contactPhone    String?
+
+  defaultPolicies Json?        // règles par défaut (re-entry, canaux, etc.)
+
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt       @map("updated_at")
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("organizer_profiles")
+}
+
+//   =========================
+//   Global Event (EventGroup)
+//   =========================
+enum EventGroupType {
+  WEDDING
+  BIRTHDAY
+  CONFERENCE
+  FESTIVAL
+  PARTY
+  OTHER
+}
+
+model EventGroup {
+  id            String         @id @default(cuid())
+  userId        String
+  title         String
+  type          EventGroupType @default(OTHER)
+  description   String?
+
+  startsAt      DateTime
+  endsAt        DateTime?
+  timezone      String?
+
+  location      String?
+  address       String?
+  themeKey      String?
+  brandingJson  Json?
+  policies      Json?          // ex: { allowReentry: true, channels: ["EMAIL","SMS"] }
+
+  status        String?        // DRAFT | PUBLISHED | ARCHIVED
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  organizer     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events        Event[]
+
+  @@index([userId])
+  @@map("event_groups")
+}
+
+// ================
+// Core: Events
+// ================ */
+enum EventType {
+  WEDDING
+  BIRTHDAY
+  PARTY
+  CONFERENCE
+  OTHER
+}
+
+model Event {
+  id            String        @id @default(cuid())
+  userId        String
+  eventGroupId  String?
+
+  name          String
+  description   String?
+  type          EventType     @default(OTHER)
+
+  startsAt      DateTime
+  endsAt        DateTime?
+  timezone      String?
+
+  location      String
+  address       String?
+  latitude      Float?
+  longitude     Float?
+
+  capacity      Int?
+  allowReentry  Boolean       @default(true)
+  policies      Json?         // overrides locales des policies du groupe
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventGroup    EventGroup?   @relation(fields: [eventGroupId], references: [id], onDelete: SetNull)
+
+  steps         Step[]
+  invitations   InvitationEvent[]
+  rsvps         RSVP[]
+  qrcodes       QRCode[]
+  checkins      Checkin[]
+
+  @@index([userId])
+  @@index([eventGroupId])
+  @@index([startsAt])
+  @@map("events")
+}
+
+model Step {
+  id        String   @id @default(cuid())
+  eventId   String
+  title     String
+  at        DateTime
+  createdAt DateTime @default(now())
+
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([eventId, at])
+  @@map("steps")
+}
+
+// ==========================
+// Invitations & Guests
+// ========================== */
+enum InvitationStatus {
+  DRAFT
+  SENT
+  DELIVERED
+  BOUNCED
+  PENDING
+  CONFIRMED
+  DECLINED
+  EXPIRED
+}
+
+enum MenuChoice {
+  CLASSIC
+  VEGAN
+  FISH
+  CHILD
+}
+
+enum Channel {
+  EMAIL
+  SMS
+  WHATSAPP
+  LINK
+}
+
+model Invitation {
+  id                String           @id @default(cuid())
+  token             String           @unique
+  firstName         String
+  lastName          String
+  email             String?
+  phone             String?
+  note              String?
+
+  status            InvitationStatus @default(PENDING)
+  sourceChannel     Channel?
+  sentAt            DateTime?
+  lastReminderAt    DateTime?
+
+  companionsAllowed Int              @default(0)   // quota max d’accompagnants
+  menuChoice        MenuChoice       @default(CLASSIC)
+
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  // Accompagnants saisis par l’invité principal
+  guests            Guest[]
+
+  // Relations
+  events            InvitationEvent[]
+  rsvps             RSVP[]
+  qrCode            QRCode?          // QR de l’invité principal (mode simple)
+  checkins          Checkin[]
+
+  @@index([email])
+  @@index([phone])
+  @@map("invitations")
+}
+
+// Accompagnant lié à une Invitation principale
+model Guest {
+  id             String    @id @default(cuid())
+  invitationId   String
+  firstName      String
+  lastName       String
+  email          String?     // facultatif : pour envoi direct du QR
+  phone          String?     // facultatif : pour envoi SMS/WhatsApp
+  note           String?
+
+  createdAt      DateTime   @default(now())
+
+  // QR dédié à l’accompagnant (1:1)
+  qrCode         QRCode?
+
+  invitation     Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  checkins       Checkin[]
+
+  @@index([invitationId])
+  @@map("guests")
+}
+
+// Liaison n:n entre Invitation et Event (même invité peut être convié à plusieurs sous-événements)
+model InvitationEvent {
+  id                String   @id @default(cuid())
+  invitationId      String
+  eventId           String
+
+  companionsAllowed Int?     // override du quota pour cet event précis
+  createdAt         DateTime @default(now())
+
+  invitation        Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  event             Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([invitationId, eventId])
+  @@index([eventId])
+  @@map("invitation_events")
+}
+
+// =========
+// RSVP
+// =========
+enum RSVPStatus {
+  YES
+  NO
+  MAYBE
+}
+
+model RSVP {
+  id            String     @id @default(cuid())
+  invitationId  String
+  eventId       String
+  status        RSVPStatus
+  respondedAt   DateTime   @default(now())
+
+  invitation    Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  event         Event      @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([invitationId, eventId])
+  @@index([eventId, status])
+  @@map("rsvps")
+}
+
+// =========
+// QR Codes
+// =========
+model QRCode {
+  id             String      @id @default(cuid())
+
+  invitationId   String?     @unique
+  guestId        String?     @unique
+  eventId        String?
+
+  qrData         String
+  imageUrl       String?
+  version        Int         @default(1)
+  generatedAt    DateTime    @default(now())
+  deactivatedAt  DateTime?
+
+  invitation     Invitation? @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  guest          Guest?      @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  event          Event?      @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@index([eventId])
+  @@map("qr_codes")
+}
+
+// ==========
+// Check-ins
+// ========== */
+enum ScanType {
+  IN
+  OUT
+}
+
+model Checkin {
+  id             String      @id @default(cuid())
+  eventId        String
+
+  invitationId   String?
+  guestId        String?
+
+  scanType       ScanType    @default(IN)
+  scannedAt      DateTime    @default(now())
+
+  gate           String?
+  deviceId       String?
+  byStaffUserId  String?
+
+  event          Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  invitation     Invitation? @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  guest          Guest?      @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  byStaffUser    User?       @relation("CheckinByStaff", fields: [byStaffUserId], references: [id], onDelete: SetNull)
+
+  @@index([eventId, scannedAt])
+  @@index([invitationId])
+  @@index([guestId])
+  @@index([byStaffUserId])
+  @@map("checkins")
+}
